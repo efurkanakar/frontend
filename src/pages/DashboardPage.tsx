@@ -3,9 +3,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { MetricCard } from '../components/MetricCard'
-import { createPlanet, softDeletePlanet } from '../api/client'
+import { createPlanet, fetchPlanetByName, softDeletePlanet } from '../api/client'
 import { usePlanetCount, usePlanetStats } from '../hooks/usePlanets'
-import type { PlanetCreateInput } from '../api/types'
+import type { PlanetCreateInput, PlanetRow } from '../api/types'
 
 const numberFormatter = new Intl.NumberFormat('en-US')
 const kpiGridStyle: React.CSSProperties = {
@@ -60,41 +60,88 @@ const helperTextStyle: React.CSSProperties = {
  */
 const DashboardPage = () => {
   const queryClient = useQueryClient()
-  const [createForm, setCreateForm] = useState({ name: '', disc_method: '', disc_year: '' })
-  const [deleteForm, setDeleteForm] = useState({ planetId: '' })
+  const [createForm, setCreateForm] = useState({
+    name: '',
+    disc_method: '',
+    disc_year: '',
+    orbperd: '',
+    rade: '',
+    masse: '',
+    st_teff: '',
+    st_rad: '',
+    st_mass: '',
+  })
+  const [deleteForm, setDeleteForm] = useState({ planetId: '', planetName: '' })
   const [createFormError, setCreateFormError] = useState<string | null>(null)
   const [deleteFormError, setDeleteFormError] = useState<string | null>(null)
   const [createdPlanetName, setCreatedPlanetName] = useState<string | null>(null)
+  const [createdPlanetId, setCreatedPlanetId] = useState<number | null>(null)
   const [deletedPlanetId, setDeletedPlanetId] = useState<number | null>(null)
+  const [deletedPlanetName, setDeletedPlanetName] = useState<string | null>(null)
+  const [pendingDeletionName, setPendingDeletionName] = useState<string | null>(null)
+  const [lookupPlanet, setLookupPlanet] = useState<PlanetRow | null>(null)
+  const [lookupError, setLookupError] = useState<string | null>(null)
 
   const countQuery = usePlanetCount()
   const statsQuery = usePlanetStats()
 
-  const createPlanetMutation = useMutation({
+  const createPlanetMutation = useMutation<PlanetRow, Error, PlanetCreateInput>({
     mutationFn: async (input: PlanetCreateInput) => createPlanet(input),
     onSuccess: (planet) => {
-      setCreateForm({ name: '', disc_method: '', disc_year: '' })
+      setCreateForm({
+        name: '',
+        disc_method: '',
+        disc_year: '',
+        orbperd: '',
+        rade: '',
+        masse: '',
+        st_teff: '',
+        st_rad: '',
+        st_mass: '',
+      })
       setCreateFormError(null)
       setCreatedPlanetName(planet?.name ?? null)
+      setCreatedPlanetId(planet?.id ?? null)
       void queryClient.invalidateQueries({ queryKey: ['planets'] })
     },
   })
 
-  const deletePlanetMutation = useMutation({
+  const deletePlanetMutation = useMutation<void, Error, number>({
     mutationFn: async (planetId: number) => softDeletePlanet(planetId),
     onSuccess: (_data, planetId) => {
-      setDeleteForm({ planetId: '' })
+      setDeleteForm({ planetId: '', planetName: '' })
       setDeleteFormError(null)
       setDeletedPlanetId(planetId)
+      setDeletedPlanetName(pendingDeletionName)
+      setPendingDeletionName(null)
+      setLookupPlanet(null)
       void queryClient.invalidateQueries({ queryKey: ['planets'] })
+    },
+    onError: () => {
+      setPendingDeletionName(null)
+    },
+  })
+
+  const lookupPlanetMutation = useMutation<PlanetRow, Error, string>({
+    mutationFn: async (name: string) => fetchPlanetByName(name),
+    onMutate: () => {
+      setLookupError(null)
+    },
+    onSuccess: (planet) => {
+      setLookupPlanet(planet)
+      setLookupError(null)
+      setDeleteForm((state) => ({ ...state, planetId: planet.id.toString() }))
+    },
+    onError: (error) => {
+      setLookupPlanet(null)
+      setLookupError(error.message)
     },
   })
 
   const cards = useMemo(() => {
     const count = countQuery.data?.total
-    const newest = statsQuery.data?.disc_year?.max
-    const earliest = statsQuery.data?.disc_year?.min
     const avgTeff = statsQuery.data?.st_teff?.avg ?? statsQuery.data?.st_teff?.mean
+    const medianTeff = statsQuery.data?.st_teff?.median
 
     return [
       {
@@ -104,22 +151,19 @@ const DashboardPage = () => {
         loading: countQuery.isLoading,
       },
       {
-        title: 'Newest discovery year',
-        value: typeof newest === 'number' ? numberFormatter.format(newest) : '—',
-        hint: 'Latest confirmed discovery in the catalogue',
-        loading: statsQuery.isLoading,
-      },
-      {
-        title: 'Earliest discovery year',
-        value: typeof earliest === 'number' ? numberFormatter.format(earliest) : '—',
-        hint: 'First recorded discovery present in the dataset',
-        loading: statsQuery.isLoading,
-      },
-      {
         title: 'Average host star temperature',
         value:
           typeof avgTeff === 'number' ? `${numberFormatter.format(Math.round(avgTeff))} K` : '—',
         hint: 'Mean effective temperature of known host stars',
+        loading: statsQuery.isLoading,
+      },
+      {
+        title: 'Median host star temperature',
+        value:
+          typeof medianTeff === 'number'
+            ? `${numberFormatter.format(Math.round(medianTeff))} K`
+            : '—',
+        hint: 'Median effective temperature across host stars',
         loading: statsQuery.isLoading,
       },
     ]
@@ -147,8 +191,30 @@ const DashboardPage = () => {
       payload.disc_method = method
     }
 
+    type AdditionalNumericField = Extract<
+      keyof PlanetCreateInput,
+      'orbperd' | 'rade' | 'masse' | 'st_teff' | 'st_rad' | 'st_mass'
+    >
+
+    const numericFields: Array<[AdditionalNumericField, string]> = [
+      ['orbperd', createForm.orbperd],
+      ['rade', createForm.rade],
+      ['masse', createForm.masse],
+      ['st_teff', createForm.st_teff],
+      ['st_rad', createForm.st_rad],
+      ['st_mass', createForm.st_mass],
+    ]
+
+    numericFields.forEach(([key, value]) => {
+      const numericValue = toNumber(value)
+      if (typeof numericValue === 'number') {
+        payload[key] = numericValue
+      }
+    })
+
     setCreateFormError(null)
     setCreatedPlanetName(null)
+    setCreatedPlanetId(null)
     void createPlanetMutation.mutateAsync(payload)
   }
 
@@ -162,7 +228,21 @@ const DashboardPage = () => {
 
     setDeleteFormError(null)
     setDeletedPlanetId(null)
+    setPendingDeletionName(lookupPlanet?.id === parsedId ? lookupPlanet.name : null)
+    setDeletedPlanetName(null)
     void deletePlanetMutation.mutateAsync(parsedId)
+  }
+
+  const handleLookupClick = () => {
+    const trimmed = deleteForm.planetName.trim()
+    if (trimmed.length === 0) {
+      setLookupError('Enter a planet name to search for its ID.')
+      setLookupPlanet(null)
+      return
+    }
+
+    setLookupError(null)
+    void lookupPlanetMutation.mutateAsync(trimmed)
   }
 
   return (
@@ -258,6 +338,90 @@ const DashboardPage = () => {
                 min="0"
               />
             </label>
+            <label style={fieldStyle}>
+              Orbital period (days)
+              <input
+                type="number"
+                inputMode="decimal"
+                value={createForm.orbperd}
+                onChange={(event) =>
+                  setCreateForm((state) => ({ ...state, orbperd: event.target.value }))
+                }
+                placeholder="10.5"
+                min="0"
+                step="any"
+              />
+            </label>
+            <label style={fieldStyle}>
+              Planet radius (Earth radii)
+              <input
+                type="number"
+                inputMode="decimal"
+                value={createForm.rade}
+                onChange={(event) =>
+                  setCreateForm((state) => ({ ...state, rade: event.target.value }))
+                }
+                placeholder="1.1"
+                min="0"
+                step="any"
+              />
+            </label>
+            <label style={fieldStyle}>
+              Planet mass (Earth masses)
+              <input
+                type="number"
+                inputMode="decimal"
+                value={createForm.masse}
+                onChange={(event) =>
+                  setCreateForm((state) => ({ ...state, masse: event.target.value }))
+                }
+                placeholder="5.97"
+                min="0"
+                step="any"
+              />
+            </label>
+            <label style={fieldStyle}>
+              Host star temperature (K)
+              <input
+                type="number"
+                inputMode="decimal"
+                value={createForm.st_teff}
+                onChange={(event) =>
+                  setCreateForm((state) => ({ ...state, st_teff: event.target.value }))
+                }
+                placeholder="5772"
+                min="0"
+                step="any"
+              />
+            </label>
+            <label style={fieldStyle}>
+              Host star radius (Solar radii)
+              <input
+                type="number"
+                inputMode="decimal"
+                value={createForm.st_rad}
+                onChange={(event) =>
+                  setCreateForm((state) => ({ ...state, st_rad: event.target.value }))
+                }
+                placeholder="1"
+                min="0"
+                step="any"
+              />
+            </label>
+            <label style={fieldStyle}>
+              Host star mass (Solar masses)
+              <input
+                type="number"
+                inputMode="decimal"
+                value={createForm.st_mass}
+                onChange={(event) =>
+                  setCreateForm((state) => ({ ...state, st_mass: event.target.value }))
+                }
+                placeholder="1"
+                min="0"
+                step="any"
+              />
+            </label>
 
             {createFormError ? (
               <p style={{ ...helperTextStyle, color: '#f87171' }}>{createFormError}</p>
@@ -269,7 +433,8 @@ const DashboardPage = () => {
             ) : null}
             {createPlanetMutation.isSuccess ? (
               <p style={{ ...helperTextStyle, color: '#34d399' }} role="status">
-                Planet {createdPlanetName ? <strong>{createdPlanetName}</strong> : 'entry'} created successfully.
+                Planet {createdPlanetName ? <strong>{createdPlanetName}</strong> : 'entry'}
+                {createdPlanetId ? ` (#${createdPlanetId})` : ''} created successfully.
               </p>
             ) : null}
 
@@ -282,10 +447,37 @@ const DashboardPage = () => {
             <div>
               <h3 style={{ margin: '0 0 0.5rem' }}>Remove a planet</h3>
               <p style={helperTextStyle}>
-                Enter the numeric identifier of the planet you want to soft delete.
+                Search for a planet by name to retrieve its identifier, then confirm the deletion.
               </p>
             </div>
 
+            <label style={fieldStyle}>
+              Planet name
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={deleteForm.planetName}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    setDeleteForm((state) => ({ ...state, planetName: value }))
+                    setLookupError(null)
+                    if (value.trim().length === 0) {
+                      setLookupPlanet(null)
+                    }
+                  }}
+                  placeholder="Kepler-186 f"
+                  style={{ flex: '1 1 220px' }}
+                />
+                <button
+                  type="button"
+                  style={{ ...buttonStyle, padding: '0.45rem 1.25rem' }}
+                  onClick={handleLookupClick}
+                  disabled={lookupPlanetMutation.isPending}
+                >
+                  {lookupPlanetMutation.isPending ? 'Searching…' : 'Find ID'}
+                </button>
+              </div>
+            </label>
             <label style={fieldStyle}>
               Planet ID
               <input
@@ -303,6 +495,16 @@ const DashboardPage = () => {
             {deleteFormError ? (
               <p style={{ ...helperTextStyle, color: '#f87171' }}>{deleteFormError}</p>
             ) : null}
+            {lookupError ? (
+              <p style={{ ...helperTextStyle, color: '#f87171' }}>{lookupError}</p>
+            ) : null}
+            {lookupPlanet ? (
+              <p style={{ ...helperTextStyle, color: '#34d399' }} role="status">
+                Found <strong>{lookupPlanet.name}</strong> with ID <strong>{lookupPlanet.id}</strong>
+                {lookupPlanet.disc_method ? ` · ${lookupPlanet.disc_method}` : ''}
+                {lookupPlanet.disc_year ? ` · ${lookupPlanet.disc_year}` : ''}
+              </p>
+            ) : null}
             {deletePlanetMutation.isError ? (
               <p style={{ ...helperTextStyle, color: '#f87171' }}>
                 {(deletePlanetMutation.error as Error).message}
@@ -310,7 +512,14 @@ const DashboardPage = () => {
             ) : null}
             {deletePlanetMutation.isSuccess ? (
               <p style={{ ...helperTextStyle, color: '#34d399' }} role="status">
-                Planet {deletedPlanetId ?? ''} removed successfully.
+                Planet
+                {deletedPlanetName ? (
+                  <>
+                    {' '}
+                    <strong>{deletedPlanetName}</strong>
+                  </>
+                ) : null}
+                {deletedPlanetId ? ` (#${deletedPlanetId})` : ''} removed successfully.
               </p>
             ) : null}
 
