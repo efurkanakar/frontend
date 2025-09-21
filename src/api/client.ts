@@ -11,7 +11,6 @@ import {
   DiscoveryQueryParams,
   MethodCountSchema,
   OpenApiDocumentSchema,
-  PlanetCreateInput,
   PlanetCountSchema,
   PlanetListParams,
   PlanetListResponse,
@@ -139,33 +138,6 @@ export const fetchPlanetById = async (planetId: number): Promise<PlanetRow> => {
 export const fetchPlanetByName = async (name: string): Promise<PlanetRow> => {
   const payload = await http<unknown>(`/planets/by-name/${encodeURIComponent(name)}`)
   return PlanetRowSchema.parse(payload)
-}
-
-/**
- * Creates a new planet entry within the catalogue.
- *
- * @param payload - Planet attributes to persist.
- * @returns The created planet row.
- */
-export const createPlanet = async (payload: PlanetCreateInput): Promise<PlanetRow> => {
-  const response = await http<unknown>('/planets/', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  })
-
-  return PlanetRowSchema.parse(response)
-}
-
-/**
- * Soft deletes a planet by identifier.
- *
- * @param planetId - Numeric identifier of the planet to delete.
- */
-export const deletePlanet = async (planetId: number): Promise<void> => {
-  await http<void>(`/planets/${planetId}`, withAdminAuth({ method: 'DELETE' }))
 }
 
 /**
