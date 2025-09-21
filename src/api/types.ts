@@ -134,6 +134,19 @@ export interface PlanetStats {
   [key: string]: unknown
 }
 
+/** Payload accepted by the `POST /planets/` endpoint when creating a planet. */
+export interface PlanetCreateInput {
+  name: string
+  disc_year?: number
+  disc_method?: string
+  orbperd?: number
+  rade?: number
+  masse?: number
+  st_teff?: number
+  st_rad?: number
+  st_mass?: number
+}
+
 /** Schema describing the raw statistics payload. */
 export const PlanetStatsSchema = z
   .record(z.string(), z.any())
