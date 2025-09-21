@@ -37,6 +37,19 @@ export const PlanetRowSchema = z
 /** Planet entry as consumed by the UI table. */
 export type PlanetRow = z.infer<typeof PlanetRowSchema>
 
+/** Payload accepted by the create planet endpoint. */
+export interface PlanetCreateInput {
+  name: string
+  disc_method?: string
+  disc_year?: number
+  orbperd?: number
+  rade?: number
+  masse?: number
+  st_teff?: number
+  st_rad?: number
+  st_mass?: number
+}
+
 /** Schema capturing the paginated response envelope for the planet list endpoint. */
 export const PlanetListResponseSchema = z
   .object({

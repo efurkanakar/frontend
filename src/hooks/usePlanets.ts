@@ -2,8 +2,10 @@
  * React Query hooks that encapsulate planet catalogue data access patterns.
  */
 
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  createPlanet,
+  deletePlanet,
   fetchMethodCounts,
   fetchMethodStats,
   fetchDeletedPlanets,
@@ -22,6 +24,7 @@ import type {
   PlanetRow,
   PlanetSortField,
   PlanetSortOrder,
+  PlanetCreateInput,
   PlanetStats,
   PlanetTimelineParams,
   PlanetTimelinePoint,
@@ -270,3 +273,37 @@ export const useDeletedPlanets = (enabled: boolean) =>
     staleTime: STALE_TIME,
     gcTime: GC_TIME,
   })
+
+/**
+ * Creates a planet and refreshes cached queries on success.
+ *
+ * @returns A mutation hook for planet creation.
+ */
+export const useCreatePlanet = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: ['planets', 'create'],
+    mutationFn: (payload: PlanetCreateInput) => createPlanet(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['planets'] })
+    },
+  })
+}
+
+/**
+ * Soft deletes a planet and invalidates cached queries on success.
+ *
+ * @returns A mutation hook for planet deletion.
+ */
+export const useDeletePlanet = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationKey: ['planets', 'delete'],
+    mutationFn: (planetId: number) => deletePlanet(planetId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['planets'] })
+    },
+  })
+}
