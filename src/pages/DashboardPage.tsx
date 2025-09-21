@@ -1,15 +1,13 @@
-import { useMemo, useState } from 'react'
-import { BarChart } from '../components/BarChart'
+import { FormEvent, useMemo, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { MetricCard } from '../components/MetricCard'
-import { TimelineChart } from '../components/TimelineChart'
-import { useMethodCounts, usePlanetCount, usePlanetStats, usePlanetTimeline } from '../hooks/usePlanets'
-import type { PlanetTimelineParams } from '../api/types'
+import { createPlanet, softDeletePlanet } from '../api/client'
+import { usePlanetCount, usePlanetStats } from '../hooks/usePlanets'
+import type { PlanetCreateInput } from '../api/types'
 
 const numberFormatter = new Intl.NumberFormat('en-US')
-const decimalFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
-
 const kpiGridStyle: React.CSSProperties = {
   display: 'grid',
   gap: '1.5rem',
@@ -21,20 +19,6 @@ const sectionStyle: React.CSSProperties = {
   flexDirection: 'column',
   gap: '1rem',
   marginTop: '2rem',
-}
-
-const sectionHeaderStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  flexWrap: 'wrap',
-  gap: '1rem',
-}
-
-const timelineControlsStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: '0.75rem',
-  flexWrap: 'wrap',
 }
 
 const buttonStyle: React.CSSProperties = {
@@ -50,25 +34,67 @@ const toNumber = (value: string): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+const formGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: '1.5rem',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+}
+
+const fieldStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '0.35rem',
+  fontSize: '0.9rem',
+}
+
+const helperTextStyle: React.CSSProperties = {
+  color: 'rgba(226, 232, 240, 0.6)',
+  fontSize: '0.8rem',
+  marginTop: '0.25rem',
+}
+
 /**
  * Dashboard landing page displaying KPIs, timeline, and method breakdowns.
  *
  * @returns The dashboard route element.
  */
 const DashboardPage = () => {
-  const [timelineForm, setTimelineForm] = useState<{ start: string; end: string }>({ start: '', end: '' })
-  const [timelineParams, setTimelineParams] = useState<PlanetTimelineParams>({})
+  const queryClient = useQueryClient()
+  const [createForm, setCreateForm] = useState({ name: '', disc_method: '', disc_year: '' })
+  const [deleteForm, setDeleteForm] = useState({ planetId: '' })
+  const [createFormError, setCreateFormError] = useState<string | null>(null)
+  const [deleteFormError, setDeleteFormError] = useState<string | null>(null)
+  const [createdPlanetName, setCreatedPlanetName] = useState<string | null>(null)
+  const [deletedPlanetId, setDeletedPlanetId] = useState<number | null>(null)
 
   const countQuery = usePlanetCount()
   const statsQuery = usePlanetStats()
-  const methodCountsQuery = useMethodCounts()
-  const timelineQuery = usePlanetTimeline(timelineParams)
+
+  const createPlanetMutation = useMutation({
+    mutationFn: async (input: PlanetCreateInput) => createPlanet(input),
+    onSuccess: (planet) => {
+      setCreateForm({ name: '', disc_method: '', disc_year: '' })
+      setCreateFormError(null)
+      setCreatedPlanetName(planet?.name ?? null)
+      void queryClient.invalidateQueries({ queryKey: ['planets'] })
+    },
+  })
+
+  const deletePlanetMutation = useMutation({
+    mutationFn: async (planetId: number) => softDeletePlanet(planetId),
+    onSuccess: (_data, planetId) => {
+      setDeleteForm({ planetId: '' })
+      setDeleteFormError(null)
+      setDeletedPlanetId(planetId)
+      void queryClient.invalidateQueries({ queryKey: ['planets'] })
+    },
+  })
 
   const cards = useMemo(() => {
     const count = countQuery.data?.total
     const newest = statsQuery.data?.disc_year?.max
-    const avgRadius = statsQuery.data?.rade?.avg ?? statsQuery.data?.rade?.mean
-    const avgMass = statsQuery.data?.masse?.avg ?? statsQuery.data?.masse?.mean
+    const earliest = statsQuery.data?.disc_year?.min
+    const avgTeff = statsQuery.data?.st_teff?.avg ?? statsQuery.data?.st_teff?.mean
 
     return [
       {
@@ -84,34 +110,59 @@ const DashboardPage = () => {
         loading: statsQuery.isLoading,
       },
       {
-        title: 'Average planet radius',
-        value: typeof avgRadius === 'number' ? `${decimalFormatter.format(avgRadius)} R⊕` : '—',
-        hint: 'Mean planetary radius across the dataset',
+        title: 'Earliest discovery year',
+        value: typeof earliest === 'number' ? numberFormatter.format(earliest) : '—',
+        hint: 'First recorded discovery present in the dataset',
         loading: statsQuery.isLoading,
       },
       {
-        title: 'Average planet mass',
-        value: typeof avgMass === 'number' ? `${decimalFormatter.format(avgMass)} M⊕` : '—',
-        hint: 'Mean planetary mass across the dataset',
+        title: 'Average host star temperature',
+        value:
+          typeof avgTeff === 'number' ? `${numberFormatter.format(Math.round(avgTeff))} K` : '—',
+        hint: 'Mean effective temperature of known host stars',
         loading: statsQuery.isLoading,
       },
     ]
   }, [countQuery.data?.total, countQuery.isLoading, statsQuery.data, statsQuery.isLoading])
 
-  const methodChartData = useMemo(
-    () =>
-      methodCountsQuery.data?.map((item) => ({
-        name: item.method,
-        value: item.count,
-      })) ?? [],
-    [methodCountsQuery.data],
-  )
+  const handleCreateSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const trimmedName = createForm.name.trim()
+    if (trimmedName.length === 0) {
+      setCreateFormError('Planet name is required.')
+      return
+    }
 
-  const applyTimelineFilters = () => {
-    setTimelineParams({
-      start_year: toNumber(timelineForm.start),
-      end_year: toNumber(timelineForm.end),
-    })
+    const payload: PlanetCreateInput = {
+      name: trimmedName,
+    }
+
+    const discYear = toNumber(createForm.disc_year)
+    if (typeof discYear === 'number') {
+      payload.disc_year = discYear
+    }
+
+    const method = createForm.disc_method.trim()
+    if (method.length > 0) {
+      payload.disc_method = method
+    }
+
+    setCreateFormError(null)
+    setCreatedPlanetName(null)
+    void createPlanetMutation.mutateAsync(payload)
+  }
+
+  const handleDeleteSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const parsedId = toNumber(deleteForm.planetId)
+    if (typeof parsedId !== 'number') {
+      setDeleteFormError('Enter a valid numeric planet ID.')
+      return
+    }
+
+    setDeleteFormError(null)
+    setDeletedPlanetId(null)
+    void deletePlanetMutation.mutateAsync(parsedId)
   }
 
   return (
@@ -152,92 +203,122 @@ const DashboardPage = () => {
       )}
 
       <section style={sectionStyle}>
-        <div style={sectionHeaderStyle}>
-          <div>
-            <h2 style={{ margin: 0 }}>Discovery timeline</h2>
-            <p style={{ color: 'rgba(226, 232, 240, 0.7)', margin: 0 }}>
-              Number of confirmed planets discovered per calendar year.
-            </p>
-          </div>
-          <form
-            style={timelineControlsStyle}
-            onSubmit={(event) => {
-              event.preventDefault()
-              applyTimelineFilters()
-            }}
-          >
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem' }}>
-              Start year
+        <div>
+          <h2 style={{ margin: 0 }}>Manage catalogue entries</h2>
+          <p style={{ color: 'rgba(226, 232, 240, 0.7)', margin: 0 }}>
+            Quickly create or remove planets using the live API endpoints.
+          </p>
+        </div>
+
+        <div style={helperTextStyle}>
+          <span>
+            Create planets via <code>POST /planets/</code> and remove them with{' '}
+            <code>DELETE /planets/{'{'}planet_id{'}'}</code>.
+          </span>
+        </div>
+
+        <div style={formGridStyle}>
+          <form onSubmit={handleCreateSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div>
+              <h3 style={{ margin: '0 0 0.5rem' }}>Add a planet</h3>
+              <p style={helperTextStyle}>Provide at least a name. Other fields are optional.</p>
+            </div>
+
+            <label style={fieldStyle}>
+              Name
               <input
-                type="number"
-                inputMode="numeric"
-                value={timelineForm.start}
+                type="text"
+                value={createForm.name}
+                onChange={(event) => setCreateForm((state) => ({ ...state, name: event.target.value }))}
+                placeholder="Planet Nine"
+                required
+              />
+            </label>
+            <label style={fieldStyle}>
+              Discovery method
+              <input
+                type="text"
+                value={createForm.disc_method}
                 onChange={(event) =>
-                  setTimelineForm((state) => ({ ...state, start: event.target.value }))
+                  setCreateForm((state) => ({ ...state, disc_method: event.target.value }))
                 }
+                placeholder="Transit"
               />
             </label>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem' }}>
-              End year
+            <label style={fieldStyle}>
+              Discovery year
               <input
                 type="number"
                 inputMode="numeric"
-                value={timelineForm.end}
-                onChange={(event) => setTimelineForm((state) => ({ ...state, end: event.target.value }))}
+                value={createForm.disc_year}
+                onChange={(event) =>
+                  setCreateForm((state) => ({ ...state, disc_year: event.target.value }))
+                }
+                placeholder="2024"
+                min="0"
               />
             </label>
-            <button type="submit" style={buttonStyle}>
-              Update
+
+            {createFormError ? (
+              <p style={{ ...helperTextStyle, color: '#f87171' }}>{createFormError}</p>
+            ) : null}
+            {createPlanetMutation.isError ? (
+              <p style={{ ...helperTextStyle, color: '#f87171' }}>
+                {(createPlanetMutation.error as Error).message}
+              </p>
+            ) : null}
+            {createPlanetMutation.isSuccess ? (
+              <p style={{ ...helperTextStyle, color: '#34d399' }} role="status">
+                Planet {createdPlanetName ? <strong>{createdPlanetName}</strong> : 'entry'} created successfully.
+              </p>
+            ) : null}
+
+            <button type="submit" style={buttonStyle} disabled={createPlanetMutation.isPending}>
+              {createPlanetMutation.isPending ? 'Creating…' : 'Create planet'}
+            </button>
+          </form>
+
+          <form onSubmit={handleDeleteSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div>
+              <h3 style={{ margin: '0 0 0.5rem' }}>Remove a planet</h3>
+              <p style={helperTextStyle}>
+                Enter the numeric identifier of the planet you want to soft delete.
+              </p>
+            </div>
+
+            <label style={fieldStyle}>
+              Planet ID
+              <input
+                type="number"
+                inputMode="numeric"
+                min="1"
+                value={deleteForm.planetId}
+                onChange={(event) =>
+                  setDeleteForm((state) => ({ ...state, planetId: event.target.value }))
+                }
+                placeholder="1024"
+              />
+            </label>
+
+            {deleteFormError ? (
+              <p style={{ ...helperTextStyle, color: '#f87171' }}>{deleteFormError}</p>
+            ) : null}
+            {deletePlanetMutation.isError ? (
+              <p style={{ ...helperTextStyle, color: '#f87171' }}>
+                {(deletePlanetMutation.error as Error).message}
+              </p>
+            ) : null}
+            {deletePlanetMutation.isSuccess ? (
+              <p style={{ ...helperTextStyle, color: '#34d399' }} role="status">
+                Planet {deletedPlanetId ?? ''} removed successfully.
+              </p>
+            ) : null}
+
+            <button type="submit" style={buttonStyle} disabled={deletePlanetMutation.isPending}>
+              {deletePlanetMutation.isPending ? 'Removing…' : 'Delete planet'}
             </button>
           </form>
         </div>
-
-        {timelineQuery.isError ? (
-          <ErrorState
-            error={timelineQuery.error}
-            title="Unable to load timeline"
-            action={
-              <button style={buttonStyle} onClick={() => void timelineQuery.refetch()}>
-                Retry
-              </button>
-            }
-          />
-        ) : timelineQuery.isLoading ? (
-          <LoadingSkeleton height="320px" />
-        ) : timelineQuery.data && timelineQuery.data.length > 0 ? (
-          <TimelineChart data={timelineQuery.data} />
-        ) : (
-          <p style={{ color: 'rgba(226, 232, 240, 0.6)' }}>No timeline data available.</p>
-        )}
-      </section>
-
-      <section style={sectionStyle}>
-        <div style={sectionHeaderStyle}>
-          <div>
-            <h2 style={{ margin: 0 }}>Discovery methods</h2>
-            <p style={{ color: 'rgba(226, 232, 240, 0.7)', margin: 0 }}>
-              Top discovery methods ranked by total confirmed planets.
-            </p>
-          </div>
-        </div>
-
-        {methodCountsQuery.isError ? (
-          <ErrorState
-            error={methodCountsQuery.error}
-            title="Unable to load method breakdown"
-            action={
-              <button style={buttonStyle} onClick={() => void methodCountsQuery.refetch()}>
-                Retry
-              </button>
-            }
-          />
-        ) : methodCountsQuery.isLoading ? (
-          <LoadingSkeleton height="320px" />
-        ) : methodChartData.length > 0 ? (
-          <BarChart data={methodChartData} title="Discovery methods" />
-        ) : (
-          <p style={{ color: 'rgba(226, 232, 240, 0.6)' }}>No discovery method data available.</p>
-        )}
       </section>
     </div>
   )
