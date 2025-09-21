@@ -3,12 +3,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { MetricCard } from '../components/MetricCard'
-import { BarChart } from '../components/BarChart'
-import { TimelineChart } from '../components/TimelineChart'
-import { createPlanet, fetchPlanetByName, softDeletePlanet } from '../api/client'
-import { useMethodCounts, usePlanetCount, usePlanetStats, usePlanetTimeline } from '../hooks/usePlanets'
+import { createPlanet, softDeletePlanet } from '../api/client'
+import { usePlanetCount, usePlanetStats } from '../hooks/usePlanets'
 import type { PlanetCreateInput } from '../api/types'
-import type { PlanetTimelinePoint, PlanetRow } from '../api/types'
 
 const numberFormatter = new Intl.NumberFormat('en-US')
 const kpiGridStyle: React.CSSProperties = {
@@ -24,20 +21,13 @@ const sectionStyle: React.CSSProperties = {
   marginTop: '2rem',
 }
 
-const primaryButtonStyle: React.CSSProperties = {
+const buttonStyle: React.CSSProperties = {
   background: 'linear-gradient(135deg, #38bdf8, #6366f1)',
   color: '#0f172a',
   fontWeight: 600,
 }
 
-const secondaryButtonStyle: React.CSSProperties = {
-  background: 'rgba(148, 163, 184, 0.2)',
-  color: '#e2e8f0',
-  fontWeight: 500,
-}
-
 const cardPlaceholder = <LoadingSkeleton height="4.5rem" />
-const chartPlaceholder = <LoadingSkeleton height="20rem" />
 
 const toNumber = (value: string): number | undefined => {
   const parsed = Number(value)
@@ -57,27 +47,6 @@ const fieldStyle: React.CSSProperties = {
   fontSize: '0.9rem',
 }
 
-const inlineFieldStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '0.25rem',
-  fontSize: '0.85rem',
-}
-
-const visualisationGridStyle: React.CSSProperties = {
-  display: 'grid',
-  gap: '1.5rem',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-}
-
-const timelineControlsStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: '1rem',
-  flexWrap: 'wrap',
-  alignItems: 'flex-end',
-  justifyContent: 'flex-start',
-}
-
 const helperTextStyle: React.CSSProperties = {
   color: 'rgba(226, 232, 240, 0.6)',
   fontSize: '0.8rem',
@@ -92,31 +61,14 @@ const helperTextStyle: React.CSSProperties = {
 const DashboardPage = () => {
   const queryClient = useQueryClient()
   const [createForm, setCreateForm] = useState({ name: '', disc_method: '', disc_year: '' })
-  const [deleteForm, setDeleteForm] = useState({ planetName: '' })
+  const [deleteForm, setDeleteForm] = useState({ planetId: '' })
   const [createFormError, setCreateFormError] = useState<string | null>(null)
   const [deleteFormError, setDeleteFormError] = useState<string | null>(null)
   const [createdPlanetName, setCreatedPlanetName] = useState<string | null>(null)
-  const [deletedPlanet, setDeletedPlanet] = useState<Pick<PlanetRow, 'id' | 'name'> | null>(null)
-  const [timelineFilters, setTimelineFilters] = useState({ startYear: '', endYear: '' })
+  const [deletedPlanetId, setDeletedPlanetId] = useState<number | null>(null)
 
   const countQuery = usePlanetCount()
   const statsQuery = usePlanetStats()
-  const methodCountsQuery = useMethodCounts()
-
-  const timelineParams = useMemo(() => {
-    const start = toNumber(timelineFilters.startYear)
-    const end = toNumber(timelineFilters.endYear)
-    const params: { start_year?: number; end_year?: number } = {}
-    if (typeof start === 'number') {
-      params.start_year = start
-    }
-    if (typeof end === 'number') {
-      params.end_year = end
-    }
-    return params
-  }, [timelineFilters])
-
-  const timelineQuery = usePlanetTimeline(timelineParams)
 
   const createPlanetMutation = useMutation({
     mutationFn: async (input: PlanetCreateInput) => createPlanet(input),
@@ -129,22 +81,19 @@ const DashboardPage = () => {
   })
 
   const deletePlanetMutation = useMutation({
-    mutationFn: async (planetName: string) => {
-      const planet = await fetchPlanetByName(planetName)
-      await softDeletePlanet(planet.id)
-      return planet
-    },
-    onSuccess: (planet) => {
-      setDeleteForm({ planetName: '' })
+    mutationFn: async (planetId: number) => softDeletePlanet(planetId),
+    onSuccess: (_data, planetId) => {
+      setDeleteForm({ planetId: '' })
       setDeleteFormError(null)
-      setDeletedPlanet({ id: planet.id, name: planet.name })
+      setDeletedPlanetId(planetId)
       void queryClient.invalidateQueries({ queryKey: ['planets'] })
     },
   })
 
   const cards = useMemo(() => {
     const count = countQuery.data?.total
-    const medianTeff = statsQuery.data?.st_teff?.median
+    const newest = statsQuery.data?.disc_year?.max
+    const earliest = statsQuery.data?.disc_year?.min
     const avgTeff = statsQuery.data?.st_teff?.avg ?? statsQuery.data?.st_teff?.mean
 
     return [
@@ -155,12 +104,15 @@ const DashboardPage = () => {
         loading: countQuery.isLoading,
       },
       {
-        title: 'Median host star temperature',
-        value:
-          typeof medianTeff === 'number'
-            ? `${numberFormatter.format(Math.round(medianTeff))} K`
-            : '—',
-        hint: 'Median effective temperature of known host stars',
+        title: 'Newest discovery year',
+        value: typeof newest === 'number' ? numberFormatter.format(newest) : '—',
+        hint: 'Latest confirmed discovery in the catalogue',
+        loading: statsQuery.isLoading,
+      },
+      {
+        title: 'Earliest discovery year',
+        value: typeof earliest === 'number' ? numberFormatter.format(earliest) : '—',
+        hint: 'First recorded discovery present in the dataset',
         loading: statsQuery.isLoading,
       },
       {
@@ -200,28 +152,17 @@ const DashboardPage = () => {
     void createPlanetMutation.mutateAsync(payload)
   }
 
-  const methodChartData = useMemo(
-    () =>
-      (methodCountsQuery.data ?? [])
-        .slice()
-        .sort((a, b) => b.count - a.count)
-        .map((item) => ({ name: item.method, value: item.count })),
-    [methodCountsQuery.data],
-  )
-
-  const timelineData: PlanetTimelinePoint[] = timelineQuery.data ?? []
-
   const handleDeleteSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const name = deleteForm.planetName.trim()
-    if (name.length === 0) {
-      setDeleteFormError('Enter the planet name you wish to remove.')
+    const parsedId = toNumber(deleteForm.planetId)
+    if (typeof parsedId !== 'number') {
+      setDeleteFormError('Enter a valid numeric planet ID.')
       return
     }
 
     setDeleteFormError(null)
-    setDeletedPlanet(null)
-    void deletePlanetMutation.mutateAsync(name)
+    setDeletedPlanetId(null)
+    void deletePlanetMutation.mutateAsync(parsedId)
   }
 
   return (
@@ -239,14 +180,10 @@ const DashboardPage = () => {
           error={countQuery.error ?? statsQuery.error}
           title="Unable to load dashboard metrics"
           action={
-            <button
-              style={primaryButtonStyle}
-              onClick={() => {
-                void countQuery.refetch()
-                void statsQuery.refetch()
-                void methodCountsQuery.refetch()
-                void timelineQuery.refetch()
-              }}
+            <button style={buttonStyle} onClick={() => {
+              void countQuery.refetch()
+              void statsQuery.refetch()
+            }}
             >
               Retry
             </button>
@@ -336,7 +273,7 @@ const DashboardPage = () => {
               </p>
             ) : null}
 
-            <button type="submit" style={primaryButtonStyle} disabled={createPlanetMutation.isPending}>
+            <button type="submit" style={buttonStyle} disabled={createPlanetMutation.isPending}>
               {createPlanetMutation.isPending ? 'Creating…' : 'Create planet'}
             </button>
           </form>
@@ -345,19 +282,21 @@ const DashboardPage = () => {
             <div>
               <h3 style={{ margin: '0 0 0.5rem' }}>Remove a planet</h3>
               <p style={helperTextStyle}>
-                Enter the planet name to look up its identifier and soft delete the record.
+                Enter the numeric identifier of the planet you want to soft delete.
               </p>
             </div>
 
             <label style={fieldStyle}>
-              Planet name
+              Planet ID
               <input
-                type="text"
-                value={deleteForm.planetName}
+                type="number"
+                inputMode="numeric"
+                min="1"
+                value={deleteForm.planetId}
                 onChange={(event) =>
-                  setDeleteForm((state) => ({ ...state, planetName: event.target.value }))
+                  setDeleteForm((state) => ({ ...state, planetId: event.target.value }))
                 }
-                placeholder="Kepler-22b"
+                placeholder="1024"
               />
             </label>
 
@@ -371,119 +310,14 @@ const DashboardPage = () => {
             ) : null}
             {deletePlanetMutation.isSuccess ? (
               <p style={{ ...helperTextStyle, color: '#34d399' }} role="status">
-                Planet
-                {deletedPlanet ? (
-                  <>
-                    {' '}
-                    <strong>{deletedPlanet.name}</strong> (ID {deletedPlanet.id})
-                  </>
-                ) : (
-                  ' entry'
-                )}
-                {' '}removed successfully.
+                Planet {deletedPlanetId ?? ''} removed successfully.
               </p>
             ) : null}
 
-            <button type="submit" style={primaryButtonStyle} disabled={deletePlanetMutation.isPending}>
+            <button type="submit" style={buttonStyle} disabled={deletePlanetMutation.isPending}>
               {deletePlanetMutation.isPending ? 'Removing…' : 'Delete planet'}
             </button>
           </form>
-        </div>
-      </section>
-
-      <section style={sectionStyle}>
-        <div>
-          <h2 style={{ margin: 0 }}>Discovery insights</h2>
-          <p style={{ color: 'rgba(226, 232, 240, 0.7)', margin: 0 }}>
-            Visualise annual discovery rates and the most common detection methods.
-          </p>
-        </div>
-
-        <div style={visualisationGridStyle}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '1rem', flexWrap: 'wrap' }}>
-              <div>
-                <h3 style={{ margin: 0 }}>Discovery timeline</h3>
-                <p style={helperTextStyle}>Annual counts sourced from <code>GET /planets/timeline</code>.</p>
-              </div>
-              <div style={timelineControlsStyle}>
-                <label style={inlineFieldStyle}>
-                  Start year
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    placeholder="1995"
-                    value={timelineFilters.startYear}
-                    onChange={(event) =>
-                      setTimelineFilters((state) => ({ ...state, startYear: event.target.value }))
-                    }
-                    min="0"
-                  />
-                </label>
-                <label style={inlineFieldStyle}>
-                  End year
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    placeholder="2024"
-                    value={timelineFilters.endYear}
-                    onChange={(event) =>
-                      setTimelineFilters((state) => ({ ...state, endYear: event.target.value }))
-                    }
-                    min="0"
-                  />
-                </label>
-                {(timelineFilters.startYear || timelineFilters.endYear) && (
-                  <button
-                    type="button"
-                    style={secondaryButtonStyle}
-                    onClick={() => setTimelineFilters({ startYear: '', endYear: '' })}
-                  >
-                    Clear filters
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {timelineQuery.isError ? (
-              <ErrorState
-                error={timelineQuery.error}
-                title="Unable to load discovery timeline"
-                action={
-                  <button style={primaryButtonStyle} onClick={() => void timelineQuery.refetch()}>
-                    Retry
-                  </button>
-                }
-              />
-            ) : timelineQuery.isLoading ? (
-              chartPlaceholder
-            ) : (
-              <TimelineChart data={timelineData} />
-            )}
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div>
-              <h3 style={{ margin: 0 }}>Discovery methods</h3>
-              <p style={helperTextStyle}>Breakdown from <code>GET /planets/method-counts</code>.</p>
-            </div>
-
-            {methodCountsQuery.isError ? (
-              <ErrorState
-                error={methodCountsQuery.error}
-                title="Unable to load discovery methods"
-                action={
-                  <button style={primaryButtonStyle} onClick={() => void methodCountsQuery.refetch()}>
-                    Retry
-                  </button>
-                }
-              />
-            ) : methodCountsQuery.isLoading ? (
-              chartPlaceholder
-            ) : (
-              <BarChart data={methodChartData} title="Planets by discovery method" />
-            )}
-          </div>
         </div>
       </section>
     </div>
